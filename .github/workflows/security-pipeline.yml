@@ -571,38 +571,43 @@ jobs:
           print(f'  DefectDojo OK – product_id={p[\"id\"]}  name={p[\"name\"]!r}')
           "
 
-      # ── Helper: import a scan and fail loud on API errors ──────────────────
-      # Uses --fail-with-body so curl exits non-zero on >=400 and still prints the JSON.
-      # The python summariser raises if "test" is missing (silent test_id=None bug).
+      # ── Upload njsscan SARIF ────────────────────────────────────────────────
+      # Notes:
+      #  - DefectDojo's import-scan endpoint expects the `engagement` field
+      #    (writable). `engagement_id` is read-only on this resource.
+      #  - njsscan's plain JSON is no longer a valid scan_type on the demo
+      #    instance, so we feed it the SARIF artefact via the generic SARIF
+      #    parser, which accepts the same findings without translation loss.
       - name: "Upload njsscan findings to DefectDojo"
         env:
           DD_URL: ${{ secrets.DEFECTDOJO_URL }}
           DD_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
-          DD_PRODUCT_ID: ${{ vars.DEFECTDOJO_PRODUCT_ID }}
           DD_ENGAGEMENT_ID: ${{ vars.DEFECTDOJO_ENGAGEMENT_ID }}
         run: |
           set -euo pipefail
           response=$(curl --fail-with-body --show-error --silent \
             -X POST "${DD_URL}/api/v2/import-scan/" \
             -H "Authorization: Token ${DD_TOKEN}" \
-            -F "scan_type=njsscan Scan" \
-            -F "file=@artefacts/njsscan/njsscan-results.json" \
-            -F "product_id=${DD_PRODUCT_ID}" \
-            -F "engagement_id=${DD_ENGAGEMENT_ID}" \
+            -F "scan_type=SARIF" \
+            -F "file=@artefacts/njsscan/njsscan.sarif" \
+            -F "engagement=${DD_ENGAGEMENT_ID}" \
             -F "active=true" \
             -F "verified=false" \
             -F "close_old_findings=true" \
-            -F "deduplication_on_engagement=true")
+            -F "deduplication_on_engagement=true" \
+            -F "tags=njsscan")
           echo "$response" | python3 -c "
           import sys, json
           resp = json.load(sys.stdin)
           if 'test' not in resp:
               print('::error::DefectDojo rejected njsscan upload:', json.dumps(resp))
               sys.exit(1)
-          stats = resp.get('statistics', {})
+          totals = resp.get('statistics', {}).get('after', {}).get('total', {})
           print(f'  [njsscan]  test_id={resp[\"test\"]}  '
-                f'findings={stats.get(\"created\", \"?\")} created, '
-                f'{stats.get(\"closed\", \"?\")} closed')
+                f'findings={totals.get(\"total\", \"?\")} '
+                f'(critical={totals.get(\"critical\", 0)}, '
+                f'high={totals.get(\"high\", 0)}, '
+                f'medium={totals.get(\"medium\", 0)})')
           "
 
       # ── Upload Semgrep SARIF ────────────────────────────────────────────────
@@ -610,7 +615,6 @@ jobs:
         env:
           DD_URL: ${{ secrets.DEFECTDOJO_URL }}
           DD_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
-          DD_PRODUCT_ID: ${{ vars.DEFECTDOJO_PRODUCT_ID }}
           DD_ENGAGEMENT_ID: ${{ vars.DEFECTDOJO_ENGAGEMENT_ID }}
         run: |
           set -euo pipefail
@@ -619,22 +623,24 @@ jobs:
             -H "Authorization: Token ${DD_TOKEN}" \
             -F "scan_type=SARIF" \
             -F "file=@artefacts/semgrep/semgrep.sarif" \
-            -F "product_id=${DD_PRODUCT_ID}" \
-            -F "engagement_id=${DD_ENGAGEMENT_ID}" \
+            -F "engagement=${DD_ENGAGEMENT_ID}" \
             -F "active=true" \
             -F "verified=false" \
             -F "close_old_findings=true" \
-            -F "deduplication_on_engagement=true")
+            -F "deduplication_on_engagement=true" \
+            -F "tags=semgrep")
           echo "$response" | python3 -c "
           import sys, json
           resp = json.load(sys.stdin)
           if 'test' not in resp:
               print('::error::DefectDojo rejected Semgrep upload:', json.dumps(resp))
               sys.exit(1)
-          stats = resp.get('statistics', {})
+          totals = resp.get('statistics', {}).get('after', {}).get('total', {})
           print(f'  [semgrep]  test_id={resp[\"test\"]}  '
-                f'findings={stats.get(\"created\", \"?\")} created, '
-                f'{stats.get(\"closed\", \"?\")} closed')
+                f'findings={totals.get(\"total\", \"?\")} '
+                f'(critical={totals.get(\"critical\", 0)}, '
+                f'high={totals.get(\"high\", 0)}, '
+                f'medium={totals.get(\"medium\", 0)})')
           "
 
       # ── Observability summary ───────────────────────────────────────────────
