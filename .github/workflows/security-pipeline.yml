@@ -553,59 +553,103 @@ jobs:
           name: "semgrep-results"
           path: ./artefacts/semgrep
 
-      # ── Upload njsscan JSON ─────────────────────────────────────────────────
-      - name: "Upload njsscan findings to DefectDojo"
+      # Fast-fail if the demo instance is unreachable or the token is invalid
+      # so reviewers see the real cause instead of a silent test_id=None.
+      - name: "Verify DefectDojo connectivity"
+        env:
+          DD_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DD_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+          DD_PRODUCT_ID: ${{ vars.DEFECTDOJO_PRODUCT_ID }}
         run: |
-          curl -s -X POST \
-            "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
-            -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
+          set -euo pipefail
+          curl --fail-with-body --show-error --silent \
+            -H "Authorization: Token ${DD_TOKEN}" \
+            "${DD_URL}/api/v2/products/${DD_PRODUCT_ID}/" \
+            | python3 -c "
+          import sys, json
+          p = json.load(sys.stdin)
+          print(f'  DefectDojo OK – product_id={p[\"id\"]}  name={p[\"name\"]!r}')
+          "
+
+      # ── Helper: import a scan and fail loud on API errors ──────────────────
+      # Uses --fail-with-body so curl exits non-zero on >=400 and still prints the JSON.
+      # The python summariser raises if "test" is missing (silent test_id=None bug).
+      - name: "Upload njsscan findings to DefectDojo"
+        env:
+          DD_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DD_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+          DD_PRODUCT_ID: ${{ vars.DEFECTDOJO_PRODUCT_ID }}
+          DD_ENGAGEMENT_ID: ${{ vars.DEFECTDOJO_ENGAGEMENT_ID }}
+        run: |
+          set -euo pipefail
+          response=$(curl --fail-with-body --show-error --silent \
+            -X POST "${DD_URL}/api/v2/import-scan/" \
+            -H "Authorization: Token ${DD_TOKEN}" \
             -F "scan_type=njsscan Scan" \
             -F "file=@artefacts/njsscan/njsscan-results.json" \
-            -F "product_id=${{ vars.DEFECTDOJO_PRODUCT_ID }}" \
-            -F "engagement_id=${{ vars.DEFECTDOJO_ENGAGEMENT_ID }}" \
+            -F "product_id=${DD_PRODUCT_ID}" \
+            -F "engagement_id=${DD_ENGAGEMENT_ID}" \
             -F "active=true" \
             -F "verified=false" \
             -F "close_old_findings=true" \
-            -F "deduplication_on_engagement=true" \
-            | python3 -c "
+            -F "deduplication_on_engagement=true")
+          echo "$response" | python3 -c "
           import sys, json
           resp = json.load(sys.stdin)
-          print(f'  [njsscan]  test_id={resp.get(\"test\")}  '
-                f'findings={resp.get(\"statistics\", {}).get(\"created\", \"?\")} created, '
-                f'{resp.get(\"statistics\", {}).get(\"closed\", \"?\")} closed')
+          if 'test' not in resp:
+              print('::error::DefectDojo rejected njsscan upload:', json.dumps(resp))
+              sys.exit(1)
+          stats = resp.get('statistics', {})
+          print(f'  [njsscan]  test_id={resp[\"test\"]}  '
+                f'findings={stats.get(\"created\", \"?\")} created, '
+                f'{stats.get(\"closed\", \"?\")} closed')
           "
 
       # ── Upload Semgrep SARIF ────────────────────────────────────────────────
       - name: "Upload Semgrep findings to DefectDojo"
+        env:
+          DD_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DD_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+          DD_PRODUCT_ID: ${{ vars.DEFECTDOJO_PRODUCT_ID }}
+          DD_ENGAGEMENT_ID: ${{ vars.DEFECTDOJO_ENGAGEMENT_ID }}
         run: |
-          curl -s -X POST \
-            "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
-            -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
+          set -euo pipefail
+          response=$(curl --fail-with-body --show-error --silent \
+            -X POST "${DD_URL}/api/v2/import-scan/" \
+            -H "Authorization: Token ${DD_TOKEN}" \
             -F "scan_type=SARIF" \
             -F "file=@artefacts/semgrep/semgrep.sarif" \
-            -F "product_id=${{ vars.DEFECTDOJO_PRODUCT_ID }}" \
-            -F "engagement_id=${{ vars.DEFECTDOJO_ENGAGEMENT_ID }}" \
+            -F "product_id=${DD_PRODUCT_ID}" \
+            -F "engagement_id=${DD_ENGAGEMENT_ID}" \
             -F "active=true" \
             -F "verified=false" \
             -F "close_old_findings=true" \
-            -F "deduplication_on_engagement=true" \
-            | python3 -c "
+            -F "deduplication_on_engagement=true")
+          echo "$response" | python3 -c "
           import sys, json
           resp = json.load(sys.stdin)
-          print(f'  [semgrep]  test_id={resp.get(\"test\")}  '
-                f'findings={resp.get(\"statistics\", {}).get(\"created\", \"?\")} created, '
-                f'{resp.get(\"statistics\", {}).get(\"closed\", \"?\")} closed')
+          if 'test' not in resp:
+              print('::error::DefectDojo rejected Semgrep upload:', json.dumps(resp))
+              sys.exit(1)
+          stats = resp.get('statistics', {})
+          print(f'  [semgrep]  test_id={resp[\"test\"]}  '
+                f'findings={stats.get(\"created\", \"?\")} created, '
+                f'{stats.get(\"closed\", \"?\")} closed')
           "
 
       # ── Observability summary ───────────────────────────────────────────────
       - name: "Print observability summary"
         if: always()
+        env:
+          DD_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DD_PRODUCT_ID: ${{ vars.DEFECTDOJO_PRODUCT_ID }}
+          DD_ENGAGEMENT_ID: ${{ vars.DEFECTDOJO_ENGAGEMENT_ID }}
         run: |
           echo "============================================================"
           echo "  DEFECTDOJO UPLOAD SUMMARY"
-          echo "  Dashboard: ${{ secrets.DEFECTDOJO_URL }}/dashboard"
-          echo "  Product ID   : ${{ vars.DEFECTDOJO_PRODUCT_ID }}"
-          echo "  Engagement ID: ${{ vars.DEFECTDOJO_ENGAGEMENT_ID }}"
+          echo "  Product page : ${DD_URL}/product/${DD_PRODUCT_ID}"
+          echo "  Engagement   : ${DD_URL}/engagement/${DD_ENGAGEMENT_ID}"
+          echo "  Metrics view : ${DD_URL}/metrics/product/type/counts"
           echo "  Scan types uploaded: njsscan, Semgrep (SARIF)"
           echo "  KPIs tracked in DefectDojo:"
           echo "    - Total / new / duplicate findings"
