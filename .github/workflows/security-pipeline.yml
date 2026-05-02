@@ -537,8 +537,11 @@ jobs:
     name: "Observability · DefectDojo Upload"
     runs-on: ubuntu-latest
     needs: [sast-njsscan, sast-semgrep, sast-sonarcloud]
-    # Run even when SAST jobs fail so findings are always recorded
-    if: always()
+    # Run when SAST jobs succeed OR fail (the security gate is allowed to
+    # fail and we still want the findings recorded), but NOT when they were
+    # cancelled. A cancelled upstream skips its upload-artifact step, so the
+    # download here would fail with "Artifact not found".
+    if: ${{ !cancelled() }}
 
     steps:
       - name: "Download njsscan artefacts"
